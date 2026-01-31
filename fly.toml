@@ -1,0 +1,17 @@
+# fly.toml 核心配置（Fly.io 部署必需）
+app = "spy-game-room"  # 你的应用名称（自定义，如spy-game-xxx，需全局唯一）
+primary_region = "hkg" # 部署区域（推荐选离用户近的：hkg=香港，syd=悉尼，sin=新加坡，tok=东京）
+
+[build]
+  builder = "paketobuildpacks/builder:base" # 自动构建Node.js应用
+  buildpacks = ["gcr.io/paketo-buildpacks/nodejs"]
+
+[http_service]
+  internal_port = 3000 # 与后端server.js的端口一致
+  force_https = true    # 强制HTTPS（安全且避免跨域问题）
+  auto_stop_machines = false # 关键：禁用自动停止（无休眠，房间状态长期保留）
+  auto_start_machines = true # 自动启动（无需手动唤醒）
+  min_machines_running = 1 # 至少保持1个实例运行（稳定可用）
+
+[env]
+  NODE_ENV = "production" # 生产环境模式
