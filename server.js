@@ -4,25 +4,8 @@ const cors = require('cors');
 
 // 初始化Express应用
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT;
 
-// ===================== 1. 修复后的跨域配置（关键） =====================
-// 兼容所有前端域名（生产环境可替换为精准域名，先测试）
-app.use(cors({
-  origin: '*', // 临时放宽为所有域名（测试通过后可改为你的前端域名：https://whoisspy.zzjjack.us.kg）
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Origin', 'X-Requested-With', 'Accept'],
-  credentials: false, // 临时关闭credentials（避免跨域凭证问题）
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-}));
-
-// 强制处理所有OPTIONS请求，返回204
-app.options('*', (req, res) => {
-  res.status(204).end();
-});
-
-// ===================== 后续代码（不变） =====================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
