@@ -1,9 +1,5 @@
 {
   "name": "spy-game-server",
-  "main": "server.js",
-  "compatibility_date": "2026-02-01",
-  "compatibility_flags": ["nodejs_compat"],
-  "vars": {
-    "NODE_ENV": "production"
-  }
+  "main": "worker.js",
+  "compatibility_date": "2026-02-01"
 }
