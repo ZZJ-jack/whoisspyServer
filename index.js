@@ -244,19 +244,6 @@ function handleGetWord(body) {
     });
   }
 
-  // 检查是否所有人都已经获取了词语
-  if (room.assigned >= room.total) {
-    return new Response(JSON.stringify({ 
-      code: -3, 
-      msg: '所有人都已获取词语，房间已结束' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
-  }
-
   // 计算已分配的卧底数量
   const assignedSpy = room.assigned - (room.total - room.spy) + (room.lastRole === 'spy' ? 1 : 0);
   // 严格控制卧底数量
@@ -267,26 +254,14 @@ function handleGetWord(body) {
   
   console.log(`房间${roomId} 分配身份:${currRole}, 已分配:${room.assigned}/${room.total}`);
   
-  // 检查是否是最后一个人获取词语
-  const isLastPlayer = room.assigned === room.total;
-  
-  const responseData = {
+  return new Response(JSON.stringify({
     code: 0,
     msg: '身份分配成功',
     data: {
       currRole,
-      lockNum: room.lockNum,
-      isLastPlayer // 告诉客户端是否是最后一个玩家
+      lockNum: room.lockNum
     }
-  };
-  
-  // 如果是最后一个人，删除房间
-  if (isLastPlayer) {
-    console.log(`房间${roomId} 所有人已获取词语，删除房间`);
-    delete roomMap[roomId];
-  }
-  
-  return new Response(JSON.stringify(responseData), {
+  }), {
     headers: {
       'Content-Type': 'application/json',
       ...corsHeaders
