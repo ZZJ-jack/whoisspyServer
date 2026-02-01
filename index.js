@@ -97,11 +97,15 @@ export default {
 
 // 数据库操作辅助函数
 async function getRoom(env, roomId) {
-  const room = await env.DB.prepare(
-    'SELECT * FROM rooms WHERE id = ?'
-  ).bind(roomId).first();
-  
-  if (room) {
+  try {
+    const room = await env.DB.prepare(
+      'SELECT * FROM rooms WHERE id = ?'
+    ).bind(roomId).first();
+    
+    if (!room) {
+      return null;
+    }
+    
     // 检查房间是否过期
     const now = Date.now();
     const createdAt = new Date(room.created_at).getTime();
@@ -110,6 +114,7 @@ async function getRoom(env, roomId) {
       await env.DB.prepare(
         'DELETE FROM rooms WHERE id = ?'
       ).bind(roomId).run();
+      console.log(`房间 ${roomId} 已过期，自动清理`);
       return null;
     }
     
@@ -120,40 +125,78 @@ async function getRoom(env, roomId) {
       console.error('解析房间数据失败:', e);
       return null;
     }
+    
+    return room;
+  } catch (error) {
+    console.error('查询房间失败:', error);
+    return null;
   }
-  
-  return room;
 }
 
 async function saveRoom(env, roomId, roomData) {
-  const now = new Date().toISOString();
-  
-  const result = await env.DB.prepare(
-    `INSERT OR REPLACE INTO rooms (id, data, created_at, updated_at)
-     VALUES (?, ?, ?, ?)`
-  ).bind(
-    roomId,
-    JSON.stringify(roomData),
-    now,
-    now
-  ).run();
-  
-  return result.success;
+  try {
+    const now = new Date().toISOString();
+    
+    // 检查房间是否已存在
+    const existingRoom = await env.DB.prepare(
+      'SELECT id FROM rooms WHERE id = ?'
+    ).bind(roomId).first();
+    
+    if (existingRoom) {
+      // 更新现有房间
+      const result = await env.DB.prepare(
+        `UPDATE rooms SET data = ?, updated_at = ? WHERE id = ?`
+      ).bind(
+        JSON.stringify(roomData),
+        now,
+        roomId
+      ).run();
+      
+      return result.success;
+    } else {
+      // 创建新房间
+      const result = await env.DB.prepare(
+        `INSERT INTO rooms (id, data, created_at, updated_at)
+         VALUES (?, ?, ?, ?)`
+      ).bind(
+        roomId,
+        JSON.stringify(roomData),
+        now,
+        now
+      ).run();
+      
+      return result.success;
+    }
+  } catch (error) {
+    console.error('保存房间失败:', error);
+    return false;
+  }
 }
 
 async function deleteRoom(env, roomId) {
-  await env.DB.prepare(
-    'DELETE FROM rooms WHERE id = ?'
-  ).bind(roomId).run();
+  try {
+    await env.DB.prepare(
+      'DELETE FROM rooms WHERE id = ?'
+    ).bind(roomId).run();
+    console.log(`已删除房间: ${roomId}`);
+    return true;
+  } catch (error) {
+    console.error('删除房间失败:', error);
+    return false;
+  }
 }
 
 // 生成6位数字房间号
 async function generateRoomId(env) {
-  const maxAttempts = 10;
+  const maxAttempts = 20; // 增加尝试次数
   
   for (let i = 0; i < maxAttempts; i++) {
     const id = Math.floor(100000 + Math.random() * 900000).toString();
-    const existingRoom = await getRoom(env, id);
+    
+    // 快速检查房间是否存在
+    const existingRoom = await env.DB.prepare(
+      'SELECT id FROM rooms WHERE id = ?'
+    ).bind(id).first();
     
     if (!existingRoom) {
       return id;
@@ -185,6 +228,7 @@ async function handleCreateRoom(body, env) {
       code: -1, 
       msg: `总玩家数必须2~${MAX_PLAYERS}之间` 
     }), {
+      status: 400,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -209,7 +253,11 @@ async function handleCreateRoom(body, env) {
       assignedCivilCount: 0
     };
     
-    await saveRoom(env, roomId, roomData);
+    const success = await saveRoom(env, roomId, roomData);
+    
+    if (!success) {
+      throw new Error('保存房间到数据库失败');
+    }
     
     console.log(`房间创建成功:${roomId}, 总人数:${total}, 卧底数:${spyNum}`);
     
@@ -228,9 +276,15 @@ async function handleCreateRoom(body, env) {
     });
   } catch (error) {
     console.error('创建房间失败:', error);
+    
+    let errorMsg = '服务器内部错误';
+    if (error.message.includes('无法生成唯一房间号')) {
+      errorMsg = '房间号生成失败，请稍后重试';
+    }
+    
     return new Response(JSON.stringify({ 
       code: -500, 
-      msg: '服务器内部错误' 
+      msg: errorMsg 
     }), {
       status: 500,
       headers: { 
@@ -247,8 +301,9 @@ async function handleJoinRoom(body, env) {
   if (!roomId || roomId.length !== 6) {
     return new Response(JSON.stringify({ 
       code: -1, 
-      msg: '房间号无效' 
+      msg: '房间号必须是6位数字' 
     }), {
+      status: 400,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -263,6 +318,7 @@ async function handleJoinRoom(body, env) {
       code: -1, 
       msg: '房间号无效或已过期' 
     }), {
+      status: 404,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -290,11 +346,25 @@ async function handleJoinRoom(body, env) {
 async function handleLockNum(body, env) {
   const { roomId, num } = body;
   
-  if (!num || num < 1) {
+  if (!roomId || roomId.length !== 6) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '房间号无效' 
+    }), {
+      status: 400,
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  if (!num || num < 1 || !Number.isInteger(num)) {
     return new Response(JSON.stringify({ 
       code: -3, 
-      msg: '题目编号无效' 
+      msg: '题目编号必须是正整数' 
     }), {
+      status: 400,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -309,6 +379,7 @@ async function handleLockNum(body, env) {
       code: -1, 
       msg: '房间号无效' 
     }), {
+      status: 404,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -334,6 +405,8 @@ async function handleLockNum(body, env) {
     });
   }
   
+  console.log(`房间 ${roomId} 锁定题目编号: ${num}`);
+  
   return new Response(JSON.stringify({
     code: 0,
     msg: '题目编号已锁定',
@@ -349,6 +422,19 @@ async function handleLockNum(body, env) {
 async function handleGetWord(body, env) {
   const { roomId } = body;
   
+  if (!roomId || roomId.length !== 6) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '房间号无效' 
+    }), {
+      status: 400,
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
   const room = await getRoom(env, roomId);
   
   if (!room) {
@@ -356,6 +442,7 @@ async function handleGetWord(body, env) {
       code: -1, 
       msg: '房间号无效' 
     }), {
+      status: 404,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -370,6 +457,7 @@ async function handleGetWord(body, env) {
       code: -2, 
       msg: '房主尚未锁定题目' 
     }), {
+      status: 400,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -383,6 +471,7 @@ async function handleGetWord(body, env) {
       code: -3, 
       msg: '房间身份已全部分配完毕' 
     }), {
+      status: 400,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -453,6 +542,19 @@ async function handleGetWord(body, env) {
 async function handleResetRoom(body, env) {
   const { roomId } = body;
   
+  if (!roomId || roomId.length !== 6) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '房间号无效' 
+    }), {
+      status: 400,
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
   const room = await getRoom(env, roomId);
   
   if (!room) {
@@ -460,6 +562,7 @@ async function handleResetRoom(body, env) {
       code: -1, 
       msg: '房间号无效' 
     }), {
+      status: 404,
       headers: { 
         'Content-Type': 'application/json',
         ...corsHeaders
@@ -496,6 +599,8 @@ async function handleResetRoom(body, env) {
     });
   }
   
+  console.log(`房间 ${roomId} 已重置`);
+  
   return new Response(JSON.stringify({
     code: 0,
     msg: '房间重置成功'
@@ -510,11 +615,12 @@ async function handleResetRoom(body, env) {
 // 清理过期房间
 async function handleCleanupRooms(env) {
   try {
-    const oneHourAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); // 清理24小时前的房间
+    // 清理创建时间超过30分钟的房间
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     
     const result = await env.DB.prepare(
       'DELETE FROM rooms WHERE created_at < ?'
-    ).bind(oneHourAgo).run();
+    ).bind(thirtyMinutesAgo).run();
     
     console.log(`清理了 ${result.changes} 个过期房间`);
     
