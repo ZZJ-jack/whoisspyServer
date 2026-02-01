@@ -131,7 +131,8 @@ function handleCreateRoom(body) {
     spy: spyNum,
     civil,
     assigned: 0,
-    lastRole: ''
+    assignedSpyCount: 0,
+    assignedCivilCount: 0
   };
   
   console.log(`房间创建成功:${roomId}, 总人数:${total}, 卧底数:${spyNum}`);
@@ -244,15 +245,45 @@ function handleGetWord(body) {
     });
   }
 
-  // 计算已分配的卧底数量
-  const assignedSpy = room.assigned - (room.total - room.spy) + (room.lastRole === 'spy' ? 1 : 0);
-  // 严格控制卧底数量
-  const currRole = assignedSpy < room.spy ? 'spy' : 'civil';
+  // 已分配的人数
+  const assigned = room.assigned;
+  
+  // 随机分配身份，确保卧底数量精确
+  let currRole;
+  if (assigned < room.total) {
+    // 还剩下多少卧底名额
+    const remainingSpySpots = room.spy - room.assignedSpyCount;
+    // 还剩下多少平民名额
+    const remainingCivilSpots = room.civil - room.assignedCivilCount;
+    
+    // 如果是第一个分配或未初始化计数，先初始化
+    if (room.assignedSpyCount === undefined) {
+      room.assignedSpyCount = 0;
+      room.assignedCivilCount = 0;
+    }
+    
+    // 如果两种身份都还有名额，随机选择一种
+    if (remainingSpySpots > 0 && remainingCivilSpots > 0) {
+      // 根据概率随机分配，概率基于剩余名额比例
+      const spyProbability = remainingSpySpots / (remainingSpySpots + remainingCivilSpots);
+      currRole = Math.random() < spyProbability ? 'spy' : 'civil';
+    } else if (remainingSpySpots > 0) {
+      currRole = 'spy';
+    } else {
+      currRole = 'civil';
+    }
+    
+    // 更新计数
+    if (currRole === 'spy') {
+      room.assignedSpyCount += 1;
+    } else {
+      room.assignedCivilCount += 1;
+    }
+  }
   
   room.assigned += 1;
-  room.lastRole = currRole;
   
-  console.log(`房间${roomId} 分配身份:${currRole}, 已分配:${room.assigned}/${room.total}`);
+  console.log(`房间${roomId} 分配身份:${currRole}, 已分配:${room.assigned}/${room.total}, 卧底:${room.assignedSpyCount}/${room.spy}, 平民:${room.assignedCivilCount}/${room.civil}`);
   
   return new Response(JSON.stringify({
     code: 0,
@@ -304,7 +335,8 @@ function handleResetRoom(body) {
     spy: spyNum,
     civil: total - spyNum,
     assigned: 0,
-    lastRole: ''
+    assignedSpyCount: 0,
+    assignedCivilCount: 0
   };
   
   return new Response(JSON.stringify({
