@@ -1,6 +1,13 @@
-{
-  "name": "spy-game-server",
-  "main": "index.js",
-  "compatibility_date": "2026-02-01",
-  "compatibility_flags": ["nodejs_compat"]
-}
+name = "spy-game-server"
+main = "index.js"
+compatibility_date = "2026-02-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"                # 在Worker中使用的变量名
+database_name = "spr_room"    # D1数据库名称
+database_id = "abc008a6-280a-4678-afad-df73664d1eb4"  # 数据库ID
+
+# 可选：添加定时任务配置
+[triggers]
+crons = ["0 * * * *"]  # 每小时执行一次清理任务
