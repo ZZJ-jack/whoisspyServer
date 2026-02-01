@@ -83,18 +83,52 @@ app.post('/api/resetRoom', (req, res) => {
   res.json({ code: 0, msg: '房间重置成功' });
 });
 
-// 适配 Cloudflare Workers
-export default {
-  async fetch(request, env, ctx) {
-    // 处理请求
-    return app(request);
+// 对于 Cloudflare Workers，我们需要创建一个适配器
+async function handleRequest(request) {
+  const url = new URL(request.url);
+  const body = await request.text();
+  
+  // 创建一个模拟的 Express 请求/响应对象
+  const req = {
+    method: request.method,
+    url: url.pathname,
+    headers: request.headers,
+    body: body ? JSON.parse(body) : {}
+  };
+  
+  const res = {
+    json: (data) => {
+      return new Response(JSON.stringify(data), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
+    }
+  };
+  
+  // 这里需要根据路由分发请求
+  // 简化版：直接调用对应的处理函数
+  if (url.pathname === '/api/createRoom' && request.method === 'POST') {
+    // 调用创建房间逻辑
+    const { total } = req.body;
+    if (!total || total < 2) {
+      return res.json({ code: -1, msg: '总玩家数必须≥2' });
+    }
+    const roomId = generateRoomId();
+    const civil = total - 1;
+    roomMap[roomId] = {
+      isLock: false, lockNum: 0, total, spy: 1, civil, assigned: 0, lastRole: ''
+    };
+    return res.json({ code: 0, msg: '房间创建成功', data: { roomId, isOwner: true } });
   }
-};
-
-// 本地开发时仍可启动服务器
-if (process.env.NODE_ENV !== 'production') {
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => {
-    console.log(`后端服务运行在：http://localhost:${port}`);
-  });
+  
+  // 其他路由类似处理...
+  
+  return new Response('Not Found', { status: 404 });
 }
+
+// Cloudflare Workers 入口点
+export default {
+  fetch: handleRequest
+};
