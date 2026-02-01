@@ -1,222 +1,100 @@
-// 引入核心依赖
 const express = require('express');
 const cors = require('cors');
 
-// 初始化Express应用
+// 创建应用实例
 const app = express();
-const PORT = process.env.PORT;
 
+app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// 内存存储房间数据
-let roomStore = {};
+// 内存存储房间信息
+const roomMap = {};
 
-// 生成6位唯一随机房间号
-function generateUniqueRoomId() {
-  let roomId;
-  do {
-    roomId = Math.floor(100000 + Math.random() * 900000).toString();
-  } while (roomStore[roomId]);
-  return roomId;
+// 生成6位数字房间号
+function generateRoomId() {
+  while (true) {
+    const id = Math.floor(100000 + Math.random() * 900000).toString();
+    if (!roomMap[id]) return id;
+  }
 }
 
-// 校验房间号是否存在
-function isRoomExist(roomId) {
-  return !!roomStore[roomId];
-}
-
-// 接口实现（保持不变）
+// 接口1：创建房间
 app.post('/api/createRoom', (req, res) => {
-  try {
-    const { total } = req.body;
-    if (!total || isNaN(total) || total < 2) {
-      return res.json({
-        code: -1,
-        msg: '总玩家数必须≥2，请输入有效数字'
-      });
-    }
-    const roomId = generateUniqueRoomId();
-    roomStore[roomId] = {
-      total: parseInt(total),
-      lockNum: 0,
-      isLock: false,
-      usedCount: 0
-    };
-    res.json({
-      code: 0,
-      msg: '创建成功',
-      data: { roomId }
-    });
-  } catch (err) {
-    console.error('创建房间失败：', err);
-    res.json({
-      code: -99,
-      msg: '服务器内部错误'
-    });
+  const { total } = req.body;
+  if (!total || total < 2) {
+    return res.json({ code: -1, msg: '总玩家数必须≥2' });
   }
+  const roomId = generateRoomId();
+  const civil = total - 1;
+  roomMap[roomId] = {
+    isLock: false, lockNum: 0, total, spy: 1, civil, assigned: 0, lastRole: ''
+  };
+  res.json({ code: 0, msg: '房间创建成功', data: { roomId, isOwner: true } });
 });
 
+// 接口2：加入房间
 app.post('/api/joinRoom', (req, res) => {
-  try {
-    const { roomId } = req.body;
-    if (!roomId || roomId.length !== 6 || isNaN(roomId)) {
-      return res.json({
-        code: -1,
-        msg: '请输入6位有效数字房间号'
-      });
-    }
-    if (!isRoomExist(roomId)) {
-      return res.json({
-        code: -2,
-        msg: '房间号不存在，请检查输入'
-      });
-    }
-    const { isLock, lockNum, total } = roomStore[roomId];
-    res.json({
-      code: 0,
-      msg: '加入房间成功',
-      data: { isLock, lockNum, total }
-    });
-  } catch (err) {
-    console.error('加入房间失败：', err);
-    res.json({
-      code: -99,
-      msg: '服务器内部错误'
-    });
+  const { roomId } = req.body;
+  if (!roomMap[roomId]) {
+    return res.json({ code: -1, msg: '房间号无效或已过期' });
   }
+  const room = roomMap[roomId];
+  res.json({
+    code: 0,
+    msg: '加入房间成功',
+    data: { isOwner: false, lockNum: room.lockNum, isLock: room.isLock, total: room.total }
+  });
 });
 
+// 接口3：锁定题目编号
 app.post('/api/lockNum', (req, res) => {
-  try {
-    const { roomId, num } = req.body;
-    if (!roomId || roomId.length !== 6 || isNaN(roomId)) {
-      return res.json({
-        code: -1,
-        msg: '房间号格式错误'
-      });
-    }
-    if (!num || isNaN(num) || num < 1) {
-      return res.json({
-        code: -2,
-        msg: '请输入有效题目编号'
-      });
-    }
-    if (!isRoomExist(roomId)) {
-      return res.json({
-        code: -3,
-        msg: '房间不存在'
-      });
-    }
-    roomStore[roomId].lockNum = parseInt(num);
-    roomStore[roomId].isLock = true;
-    res.json({
-      code: 0,
-      msg: '题目编号锁定成功'
-    });
-  } catch (err) {
-    console.error('锁定编号失败：', err);
-    res.json({
-      code: -99,
-      msg: '服务器内部错误'
-    });
-  }
+  const { roomId, num } = req.body;
+  if (!roomMap[roomId]) return res.json({ code: -1, msg: '房间号无效' });
+  roomMap[roomId].isLock = true;
+  roomMap[roomId].lockNum = num;
+  res.json({ code: 0, msg: '题目编号已锁定', data: { lockNum: num } });
 });
 
+// 接口4：获取身份词语
 app.post('/api/getWord', (req, res) => {
-  try {
-    const { roomId } = req.body;
-    if (!roomId || roomId.length !== 6 || isNaN(roomId)) {
-      return res.json({
-        code: -1,
-        msg: '房间号格式错误'
-      });
-    }
-    if (!isRoomExist(roomId)) {
-      return res.json({
-        code: -2,
-        msg: '房间不存在，请重新加入'
-      });
-    }
-    const room = roomStore[roomId];
-    if (!room.isLock) {
-      return res.json({
-        code: -3,
-        msg: '房主尚未锁定题目，请等待'
-      });
-    }
-    if (room.usedCount >= room.total) {
-      return res.json({
-        code: -4,
-        msg: '当前房间人数已达上限，无法领取词语'
-      });
-    }
-    let currRole = 'civilian';
-    if (room.usedCount === 0) {
-      currRole = 'spy';
-    }
-    room.usedCount += 1;
-    res.json({
-      code: 0,
-      msg: '身份获取成功',
-      data: {
-        currRole,
-        lockNum: room.lockNum
-      }
-    });
-  } catch (err) {
-    console.error('获取词语失败：', err);
-    res.json({
-      code: -99,
-      msg: '服务器内部错误'
-    });
-  }
+  const { roomId } = req.body;
+  if (!roomMap[roomId]) return res.json({ code: -1, msg: '房间号无效' });
+  const room = roomMap[roomId];
+  if (!room.isLock) return res.json({ code: -2, msg: '房主尚未锁定题目' });
+
+  const assignedSpy = room.assigned - room.civil + (room.lastRole === 'civil' ? 1 : 0);
+  const currRole = room.assigned === 0
+    ? (Math.random() > 0.5 ? 'spy' : 'civil')
+    : (assignedSpy < room.spy ? 'spy' : 'civil');
+
+  room.assigned += 1;
+  room.lastRole = currRole;
+  res.json({ code: 0, msg: '身份分配成功', data: { currRole, lockNum: room.lockNum } });
 });
 
+// 接口5：重置房间
 app.post('/api/resetRoom', (req, res) => {
-  try {
-    const { roomId } = req.body;
-    if (!roomId || roomId.length !== 6 || isNaN(roomId)) {
-      return res.json({
-        code: -1,
-        msg: '房间号格式错误'
-      });
-    }
-    if (!isRoomExist(roomId)) {
-      return res.json({
-        code: -2,
-        msg: '房间不存在'
-      });
-    }
-    roomStore[roomId].lockNum = 0;
-    roomStore[roomId].isLock = false;
-    roomStore[roomId].usedCount = 0;
-    res.json({
-      code: 0,
-      msg: '房间重置成功'
-    });
-  } catch (err) {
-    console.error('重置房间失败：', err);
-    res.json({
-      code: -99,
-      msg: '服务器内部错误'
-    });
+  const { roomId } = req.body;
+  if (!roomMap[roomId]) return res.json({ code: -1, msg: '房间号无效' });
+  const total = roomMap[roomId].total;
+  roomMap[roomId] = {
+    isLock: false, lockNum: 0, total, spy: 1, civil: total - 1, assigned: 0, lastRole: ''
+  };
+  res.json({ code: 0, msg: '房间重置成功' });
+});
+
+// 适配 Cloudflare Workers
+export default {
+  async fetch(request, env, ctx) {
+    // 处理请求
+    return app(request);
   }
-});
+};
 
-// 健康检查接口
-app.get('/health', (req, res) => {
-  res.json({ code: 0, msg: '服务器运行正常', data: { port: PORT } });
-});
-
-// 启动服务
-app.listen(PORT, () => {
-  console.log(`✅ 后端服务已启动，运行在端口：${PORT}`);
-  console.log(`✅ 跨域允许：所有域名（测试用）`);
-  console.log(`✅ 健康检查地址：http://localhost:${PORT}/health`);
-});
-
-// 兜底处理404
-app.use('*', (req, res) => {
-  res.json({ code: -404, msg: '接口不存在' });
-});
+// 本地开发时仍可启动服务器
+if (process.env.NODE_ENV !== 'production') {
+  const port = process.env.PORT || 3000;
+  app.listen(port, () => {
+    console.log(`后端服务运行在：http://localhost:${port}`);
+  });
+}
