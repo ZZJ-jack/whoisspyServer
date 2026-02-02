@@ -1,109 +1,540 @@
-// 在前端代码中，修改以下部分：
+// 内存存储房间信息和题库
+const roomMap = {};
 
-// 1. 移除题库相关变量
-// 删除：let wordBank = {}; 
-// 删除：let validNums = []; 
-// 删除：let isBankLoaded = false;
+// 题库数据
+let wordBank = {};
+let validNums = [];
 
-// 2. 修改获取词语函数
-async function getWord() {
-    if (isRequesting) return;
-    if (!gameConfig.isInRoom) {
-        return renderResult('error', '❌ 请先创建/加入房间');
-    }
-    if (gameConfig.hasGetWord) {
-        return renderResult('error', '❌ 你已获取过词语，不可重复领取');
+// 在Worker启动时加载题库
+async function initWordBank() {
+  try {
+    // 从环境变量获取题库URL，或使用默认
+    const wordBankUrl = typeof WORD_BANK_URL !== 'undefined' ? WORD_BANK_URL : 'https://gitee.com/zzj-jack/whoisspyServer/raw/main/title.txt';
+    
+    console.log('正在加载题库...');
+    const response = await fetch(wordBankUrl);
+    
+    if (!response.ok) {
+      throw new Error(`题库加载失败: ${response.status}`);
     }
     
-    startRequest();
-    try {
-        const res = await axios.post(`${BASE_URL}/api/getWord`, {
-            roomId: gameConfig.roomId
-        });
-        
-        // 处理各种错误码
-        if (res.data.code === -1) {
-            return renderResult('error', res.data.msg);
+    const text = await response.text();
+    console.log(`题库大小: ${text.length}字符`);
+    
+    // 解析题库
+    const lines = text.split(/\r?\n/).filter(line => {
+      const trimLine = line.trim();
+      return trimLine !== '' && !trimLine.startsWith('//') && !trimLine.startsWith('#');
+    });
+    
+    lines.forEach((line, idx) => {
+      const trimLine = line.trim();
+      let separator = '/';
+      if (trimLine.includes('|')) separator = '|';
+      
+      const parts = trimLine.split(separator);
+      if (parts.length >= 2) {
+        const spyWord = parts[0].trim();
+        const civilWord = parts[1].trim();
+        if (spyWord && civilWord) {
+          wordBank[idx + 1] = [spyWord, civilWord];
         }
-        if (res.data.code === -2) {
-            return renderResult('error', res.data.msg);
-        }
-        if (res.data.code === -3) {
-            renderResult('error', res.data.msg);
-            gameConfig.hasGetWord = true;
-            saveGameConfig();
-            dom.queryBtn.classList.add('btn-disabled');
-            dom.queryBtn.disabled = true;
-            return;
-        }
-        if (res.data.code === -4) {
-            return renderResult('error', res.data.msg);
-        }
-        
-        const { currRole, lockNum, word, assigned, total } = res.data.data;
-        const roleName = currRole === 'spy' ? '卧底' : '平民';
-        
-        // 更新状态
-        gameConfig.hasGetWord = true;
-        saveGameConfig();
-        
-        // 展示结果
-        renderResult('game', lockNum, word, roleName, currRole);
-        
-        // 禁用获取按钮
-        dom.queryBtn.classList.add('btn-disabled');
-        dom.queryBtn.disabled = true;
-        
-    } catch (err) {
-        renderResult('error', '❌ 身份获取失败，请稍后再试');
-        console.error(err);
-    } finally {
-        endRequest();
+      }
+    });
+    
+    validNums = Object.keys(wordBank).map(Number).sort((a, b) => a - b);
+    
+    console.log(`题库加载完成，共${validNums.length}题`);
+    
+    // 如果题库为空，使用备用题库
+    if (validNums.length === 0) {
+      console.warn('题库为空，使用备用题库');
+      loadFallbackWords();
     }
+    
+  } catch (error) {
+    console.error('题库加载错误:', error);
+    console.warn('使用备用题库');
+    loadFallbackWords();
+  }
 }
 
-// 3. 修改页面初始化，移除题库加载
-window.onload = function() {
-    // ... 原有的恢复状态逻辑 ...
-    
-    // 删除：readTxtFromServer(); // 不再需要
-    // 改为：检查后端题库状态
-    checkBackendStatus();
-    
-    bindAllEvents();
-    dom.roomIdInput.oninput = function() {
-        this.value = this.value.replace(/\D/g, '');
-    };
+// 备用题库
+function loadFallbackWords() {
+  wordBank = {
+    1: ['苹果', '香蕉'],
+    2: ['咖啡', '奶茶'],
+    3: ['微信', 'QQ'],
+    4: ['猫', '狗'],
+    5: ['冰箱', '空调'],
+    6: ['篮球', '足球'],
+    7: ['自行车', '电动车'],
+    8: ['电影院', 'KTV'],
+    9: ['春节', '中秋节'],
+    10: ['长城', '故宫'],
+    11: ['米饭', '面条'],
+    12: ['火车', '飞机'],
+    13: ['手机', '电脑'],
+    14: ['游泳', '跑步'],
+    15: ['可乐', '雪碧'],
+    16: ['太阳', '月亮'],
+    17: ['医生', '护士'],
+    18: ['钢琴', '小提琴'],
+    19: ['夏天', '冬天'],
+    20: ['牛奶', '豆浆']
+  };
+  validNums = Object.keys(wordBank).map(Number).sort((a, b) => a - b);
+  console.log(`已加载备用题库: ${validNums.length}题`);
+}
+
+// CORS 头部
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// 4. 添加检查后端状态函数
-async function checkBackendStatus() {
-    try {
-        const res = await axios.post(`${BASE_URL}/api/getBankInfo`);
-        if (res.data.code === 0) {
-            const { total, minNum, maxNum } = res.data.data;
-            dom.bankCount.innerText = `(${total}题)`;
-            dom.numInput.max = maxNum;
-            dom.numInput.placeholder = `输入${minNum}-${maxNum}的编号`;
-            renderResult('success', `✅ 后端题库就绪，共${total}题`);
-        }
-    } catch (err) {
-        console.log('后端题库信息获取失败，不影响主要功能');
-    }
+// 生成6位数字房间号
+function generateRoomId() {
+  while (true) {
+    const id = Math.floor(100000 + Math.random() * 900000).toString();
+    if (!roomMap[id]) return id;
+  }
 }
 
-// 5. 修改启用游戏操作按钮函数
-function enableGameOper(isEnable, canRandom) {
-    // 不再依赖题库加载状态
-    dom.numInput.disabled = !isEnable;
-    dom.queryBtn.disabled = !isEnable || gameConfig.hasGetWord;
-    dom.randomBtn.disabled = !isEnable || !canRandom;
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
     
-    dom.queryBtn.classList.toggle('btn-disabled', !isEnable || gameConfig.hasGetWord);
-    dom.randomBtn.classList.toggle('btn-disabled', !isEnable || !canRandom);
-    
-    if (isEnable) {
-        // 可以显示默认范围，或者留空
-        dom.numInput.placeholder = `输入题目编号`;
+    // 初始化题库（只在第一次请求时加载）
+    if (validNums.length === 0) {
+      await initWordBank();
     }
+    
+    // 处理 OPTIONS 预检请求
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: corsHeaders
+      });
+    }
+    
+    // 只处理 POST 请求
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ 
+        code: -405, 
+        msg: '方法不允许' 
+      }), {
+        status: 405,
+        headers: { 
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        }
+      });
+    }
+    
+    // 解析请求体
+    let body;
+    try {
+      body = await request.json();
+    } catch (e) {
+      return new Response(JSON.stringify({ 
+        code: -400, 
+        msg: '请求体格式错误' 
+      }), {
+        status: 400,
+        headers: { 
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        }
+      });
+    }
+    
+    console.log(`请求:${url.pathname}`, body);
+    
+    // 路由分发
+    switch (url.pathname) {
+      case '/api/createRoom':
+        return handleCreateRoom(body);
+        
+      case '/api/joinRoom':
+        return handleJoinRoom(body);
+        
+      case '/api/lockNum':
+        return handleLockNum(body);
+        
+      case '/api/getWord':
+        return handleGetWord(body);
+        
+      case '/api/resetRoom':
+        return handleResetRoom(body);
+        
+      case '/api/getWordByNum':
+        return handleGetWordByNum(body);
+        
+      case '/api/getBankInfo':
+        return handleGetBankInfo(body);
+        
+      default:
+        return new Response(JSON.stringify({ 
+          code: -404, 
+          msg: '接口不存在',
+          path: url.pathname
+        }), {
+          status: 404,
+          headers: { 
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          }
+        });
+    }
+  }
+};
+
+// 处理函数
+function handleCreateRoom(body) {
+  const { total } = body;
+  
+  if (!total || total < 2) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '总玩家数必须≥2' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+
+  // 谁是卧底标准规则：自动计算卧底数量
+  let spyNum;
+  if (total <= 6) {
+    spyNum = 1;
+  } else if (total <= 10) {
+    spyNum = 2;
+  } else if (total <= 16) {
+    spyNum = 3;
+  } else {
+    spyNum = Math.floor(total / 5); // 超过16人时，每5人配1个卧底
+  }
+
+  const roomId = generateRoomId();
+  const civil = total - spyNum;
+  
+  roomMap[roomId] = {
+    isLock: false,
+    lockNum: 0,
+    total,
+    spy: spyNum,
+    civil,
+    assigned: 0,
+    assignedSpyCount: 0,
+    assignedCivilCount: 0
+  };
+  
+  console.log(`房间创建成功:${roomId}, 总人数:${total}, 卧底数:${spyNum}`);
+  
+  return new Response(JSON.stringify({
+    code: 0,
+    msg: '房间创建成功',
+    data: {
+      roomId,
+      isOwner: true
+    }
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders
+    }
+  });
+}
+
+function handleJoinRoom(body) {
+  const { roomId } = body;
+  
+  if (!roomMap[roomId]) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '房间号无效或已过期' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  const room = roomMap[roomId];
+  
+  return new Response(JSON.stringify({
+    code: 0,
+    msg: '加入房间成功',
+    data: {
+      isOwner: false,
+      lockNum: room.lockNum,
+      isLock: room.isLock,
+      total: room.total
+    }
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders
+    }
+  });
+}
+
+function handleLockNum(body) {
+  const { roomId, num } = body;
+  
+  if (!roomMap[roomId]) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '房间号无效' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  // 验证题目编号是否有效
+  if (!wordBank[num]) {
+    return new Response(JSON.stringify({ 
+      code: -3, 
+      msg: '题目编号无效' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  roomMap[roomId].isLock = true;
+  roomMap[roomId].lockNum = num;
+  
+  return new Response(JSON.stringify({
+    code: 0,
+    msg: '题目编号已锁定',
+    data: { lockNum: num }
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders
+    }
+  });
+}
+
+function handleGetWord(body) {
+  const { roomId } = body;
+  
+  if (!roomMap[roomId]) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '房间号无效' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  const room = roomMap[roomId];
+  
+  if (!room.isLock) {
+    return new Response(JSON.stringify({ 
+      code: -2, 
+      msg: '房主尚未锁定题目' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+
+  // 检查题库是否有该题目
+  const lockNum = room.lockNum;
+  if (!wordBank[lockNum]) {
+    return new Response(JSON.stringify({ 
+      code: -4, 
+      msg: `题库中没有编号为${lockNum}的题目` 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+
+  // 已分配的人数
+  const assigned = room.assigned;
+  
+  if (assigned >= room.total) {
+    return new Response(JSON.stringify({ 
+      code: -3, 
+      msg: '本房间身份已全部分配完毕' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  // 随机分配身份，确保卧底数量精确
+  let currRole;
+  
+  // 还剩下多少卧底名额
+  const remainingSpySpots = room.spy - room.assignedSpyCount;
+  // 还剩下多少平民名额
+  const remainingCivilSpots = room.civil - room.assignedCivilCount;
+  
+  // 如果两种身份都还有名额，随机选择一种
+  if (remainingSpySpots > 0 && remainingCivilSpots > 0) {
+    // 根据概率随机分配，概率基于剩余名额比例
+    const spyProbability = remainingSpySpots / (remainingSpySpots + remainingCivilSpots);
+    currRole = Math.random() < spyProbability ? 'spy' : 'civil';
+  } else if (remainingSpySpots > 0) {
+    currRole = 'spy';
+  } else {
+    currRole = 'civil';
+  }
+  
+  // 更新计数
+  if (currRole === 'spy') {
+    room.assignedSpyCount += 1;
+  } else {
+    room.assignedCivilCount += 1;
+  }
+  
+  room.assigned += 1;
+  
+  // 获取词语
+  const [spyWord, civilWord] = wordBank[lockNum];
+  const word = currRole === 'spy' ? spyWord : civilWord;
+  
+  console.log(`房间${roomId} 分配:${currRole}, 已分配:${room.assigned}/${room.total}, 词语:"${word}"`);
+  
+  return new Response(JSON.stringify({
+    code: 0,
+    msg: '身份分配成功',
+    data: {
+      currRole,
+      lockNum,
+      word,
+      assigned: room.assigned,
+      total: room.total
+    }
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders
+    }
+  });
+}
+
+function handleResetRoom(body) {
+  const { roomId } = body;
+  
+  if (!roomMap[roomId]) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '房间号无效' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  const total = roomMap[roomId].total;
+  // 重置时重新计算卧底数量
+  let spyNum;
+  if (total <= 6) {
+    spyNum = 1;
+  } else if (total <= 10) {
+    spyNum = 2;
+  } else if (total <= 16) {
+    spyNum = 3;
+  } else {
+    spyNum = Math.floor(total / 5);
+  }
+  
+  roomMap[roomId] = {
+    isLock: false,
+    lockNum: 0,
+    total,
+    spy: spyNum,
+    civil: total - spyNum,
+    assigned: 0,
+    assignedSpyCount: 0,
+    assignedCivilCount: 0
+  };
+  
+  return new Response(JSON.stringify({
+    code: 0,
+    msg: '房间重置成功'
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders
+    }
+  });
+}
+
+// 新增：根据编号获取题目
+function handleGetWordByNum(body) {
+  const { num } = body;
+  
+  if (!num || !wordBank[num]) {
+    return new Response(JSON.stringify({ 
+      code: -1, 
+      msg: '题目编号无效' 
+    }), {
+      headers: { 
+        'Content-Type': 'application/json',
+        ...corsHeaders
+      }
+    });
+  }
+  
+  const [spyWord, civilWord] = wordBank[num];
+  
+  return new Response(JSON.stringify({
+    code: 0,
+    msg: '获取题目成功',
+    data: {
+      num,
+      spyWord,
+      civilWord
+    }
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders
+    }
+  });
+}
+
+// 新增：获取题库信息
+function handleGetBankInfo(body) {
+  return new Response(JSON.stringify({
+    code: 0,
+    msg: '题库信息',
+    data: {
+      total: validNums.length,
+      minNum: validNums[0] || 1,
+      maxNum: validNums[validNums.length - 1] || 1,
+      sampleCount: Math.min(5, validNums.length)
+    }
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders
+    }
+  });
 }
