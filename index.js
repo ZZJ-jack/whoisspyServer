@@ -1,16 +1,22 @@
-// 内存存储房间信息和题库
-const roomMap = {};
+// src/index.js
 
-// 题库数据
+// CORS 头部
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+// 内存缓存（提高性能）
+let roomCache = new Map();
 let wordBank = {};
 let validNums = [];
+let cacheLoaded = false;
 
-// 在Worker启动时加载题库
+// 初始化题库
 async function initWordBank() {
   try {
-    // 从环境变量获取题库URL，或使用默认
-    const wordBankUrl = typeof WORD_BANK_URL !== 'undefined' ? WORD_BANK_URL : 'https://gitee.com/zzj-jack/whoisspyServer/raw/main/title.txt';
-    
+    const wordBankUrl = 'https://gitee.com/zzj-jack/whoisspyServer/raw/main/title.txt';
     console.log('正在加载题库...');
     const response = await fetch(wordBankUrl);
     
@@ -21,7 +27,6 @@ async function initWordBank() {
     const text = await response.text();
     console.log(`题库大小: ${text.length}字符`);
     
-    // 解析题库
     const lines = text.split(/\r?\n/).filter(line => {
       const trimLine = line.trim();
       return trimLine !== '' && !trimLine.startsWith('//') && !trimLine.startsWith('#');
@@ -43,10 +48,8 @@ async function initWordBank() {
     });
     
     validNums = Object.keys(wordBank).map(Number).sort((a, b) => a - b);
-    
     console.log(`题库加载完成，共${validNums.length}题`);
     
-    // 如果题库为空，使用备用题库
     if (validNums.length === 0) {
       console.warn('题库为空，使用备用题库');
       loadFallbackWords();
@@ -87,126 +90,92 @@ function loadFallbackWords() {
   console.log(`已加载备用题库: ${validNums.length}题`);
 }
 
-// CORS 头部
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
-
-// 生成6位数字房间号
-function generateRoomId() {
-  while (true) {
-    const id = Math.floor(100000 + Math.random() * 900000).toString();
-    if (!roomMap[id]) return id;
+// 从 KV 加载房间数据
+async function loadRoomsFromKV(env) {
+  try {
+    console.log('从 KV 加载房间数据...');
+    const savedData = await env.ROOMS_KV.get('rooms_data');
+    if (savedData) {
+      const data = JSON.parse(savedData);
+      roomCache = new Map(data.rooms || []);
+      
+      // 清理过期房间（超过6小时）
+      const now = Date.now();
+      const expireTime = 6 * 60 * 60 * 1000;
+      
+      for (const [roomId, room] of roomCache.entries()) {
+        if (!room.createdAt || (now - room.createdAt) > expireTime) {
+          roomCache.delete(roomId);
+          console.log(`清理过期房间: ${roomId}`);
+        }
+      }
+      
+      console.log(`从 KV 加载了 ${roomCache.size} 个房间`);
+    } else {
+      console.log('KV 中没有找到房间数据，使用空缓存');
+    }
+  } catch (error) {
+    console.error('从 KV 加载房间数据失败:', error);
   }
 }
 
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+// 保存房间数据到 KV
+async function saveRoomsToKV(env) {
+  try {
+    // 清理过期房间
+    const now = Date.now();
+    const expireTime = 6 * 60 * 60 * 1000;
     
-    // 初始化题库（只在第一次请求时加载）
-    if (validNums.length === 0) {
-      await initWordBank();
+    for (const [roomId, room] of roomCache.entries()) {
+      if (!room.createdAt || (now - room.createdAt) > expireTime) {
+        roomCache.delete(roomId);
+      }
     }
     
-    // 处理 OPTIONS 预检请求
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: corsHeaders
-      });
-    }
+    // 转换为数组以便存储
+    const roomsArray = Array.from(roomCache.entries());
+    const data = {
+      rooms: roomsArray,
+      lastUpdated: now
+    };
     
-    // 只处理 POST 请求
-    if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ 
-        code: -405, 
-        msg: '方法不允许' 
-      }), {
-        status: 405,
-        headers: { 
-          'Content-Type': 'application/json',
-          ...corsHeaders
-        }
-      });
-    }
-    
-    // 解析请求体
-    let body;
-    try {
-      body = await request.json();
-    } catch (e) {
-      return new Response(JSON.stringify({ 
-        code: -400, 
-        msg: '请求体格式错误' 
-      }), {
-        status: 400,
-        headers: { 
-          'Content-Type': 'application/json',
-          ...corsHeaders
-        }
-      });
-    }
-    
-    console.log(`请求:${url.pathname}`, body);
-    
-    // 路由分发
-    switch (url.pathname) {
-      case '/api/createRoom':
-        return handleCreateRoom(body);
-        
-      case '/api/joinRoom':
-        return handleJoinRoom(body);
-        
-      case '/api/lockNum':
-        return handleLockNum(body);
-        
-      case '/api/getWord':
-        return handleGetWord(body);
-        
-      case '/api/resetRoom':
-        return handleResetRoom(body);
-        
-      case '/api/getWordByNum':
-        return handleGetWordByNum(body);
-        
-      case '/api/getBankInfo':
-        return handleGetBankInfo(body);
-        
-      default:
-        return new Response(JSON.stringify({ 
-          code: -404, 
-          msg: '接口不存在',
-          path: url.pathname
-        }), {
-          status: 404,
-          headers: { 
-            'Content-Type': 'application/json',
-            ...corsHeaders
-          }
-        });
-    }
+    await env.ROOMS_KV.put('rooms_data', JSON.stringify(data));
+    console.log(`房间数据已保存到 KV，共 ${roomCache.size} 个房间`);
+  } catch (error) {
+    console.error('保存到 KV 失败:', error);
   }
-};
+}
 
-// 处理函数
-function handleCreateRoom(body) {
+// 房间管理函数
+function getRoom(roomId) {
+  return roomCache.get(roomId);
+}
+
+function setRoom(roomId, roomData) {
+  roomCache.set(roomId, roomData);
+  return roomData;
+}
+
+function deleteRoom(roomId) {
+  return roomCache.delete(roomId);
+}
+
+function generateRoomId() {
+  while (true) {
+    const id = Math.floor(100000 + Math.random() * 900000).toString();
+    if (!roomCache.has(id)) return id;
+  }
+}
+
+// API 处理函数
+async function handleCreateRoom(body, env) {
   const { total } = body;
   
   if (!total || total < 2) {
-    return new Response(JSON.stringify({ 
-      code: -1, 
-      msg: '总玩家数必须≥2' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+    return createResponse({ code: -1, msg: '总玩家数必须≥2' });
   }
 
-  // 谁是卧底标准规则：自动计算卧底数量
+  // 计算卧底数量
   let spyNum;
   if (total <= 6) {
     spyNum = 1;
@@ -215,13 +184,14 @@ function handleCreateRoom(body) {
   } else if (total <= 16) {
     spyNum = 3;
   } else {
-    spyNum = Math.floor(total / 5); // 超过16人时，每5人配1个卧底
+    spyNum = Math.floor(total / 5);
   }
 
   const roomId = generateRoomId();
   const civil = total - spyNum;
+  const now = Date.now();
   
-  roomMap[roomId] = {
+  const roomData = {
     isLock: false,
     lockNum: 0,
     total,
@@ -229,44 +199,35 @@ function handleCreateRoom(body) {
     civil,
     assigned: 0,
     assignedSpyCount: 0,
-    assignedCivilCount: 0
+    assignedCivilCount: 0,
+    createdAt: now,
+    lastActivity: now
   };
   
-  console.log(`房间创建成功:${roomId}, 总人数:${total}, 卧底数:${spyNum}`);
+  setRoom(roomId, roomData);
   
-  return new Response(JSON.stringify({
+  console.log(`房间创建成功: ${roomId}, 总人数: ${total}, 卧底数: ${spyNum}`);
+  
+  return createResponse({
     code: 0,
     msg: '房间创建成功',
-    data: {
-      roomId,
-      isOwner: true
-    }
-  }), {
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders
-    }
+    data: { roomId, isOwner: true }
   });
 }
 
-function handleJoinRoom(body) {
+async function handleJoinRoom(body) {
   const { roomId } = body;
   
-  if (!roomMap[roomId]) {
-    return new Response(JSON.stringify({ 
-      code: -1, 
-      msg: '房间号无效或已过期' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+  const room = getRoom(roomId);
+  if (!room) {
+    return createResponse({ code: -1, msg: '房间号无效或已过期' });
   }
   
-  const room = roomMap[roomId];
+  // 更新最后活动时间
+  room.lastActivity = Date.now();
+  setRoom(roomId, room);
   
-  return new Response(JSON.stringify({
+  return createResponse({
     code: 0,
     msg: '加入房间成功',
     data: {
@@ -275,126 +236,62 @@ function handleJoinRoom(body) {
       isLock: room.isLock,
       total: room.total
     }
-  }), {
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders
-    }
   });
 }
 
-function handleLockNum(body) {
+async function handleLockNum(body) {
   const { roomId, num } = body;
   
-  if (!roomMap[roomId]) {
-    return new Response(JSON.stringify({ 
-      code: -1, 
-      msg: '房间号无效' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+  const room = getRoom(roomId);
+  if (!room) {
+    return createResponse({ code: -1, msg: '房间号无效' });
   }
   
-  // 验证题目编号是否有效
   if (!wordBank[num]) {
-    return new Response(JSON.stringify({ 
-      code: -3, 
-      msg: '题目编号无效' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+    return createResponse({ code: -3, msg: '题目编号无效' });
   }
   
-  roomMap[roomId].isLock = true;
-  roomMap[roomId].lockNum = num;
+  room.isLock = true;
+  room.lockNum = num;
+  room.lastActivity = Date.now();
+  setRoom(roomId, room);
   
-  return new Response(JSON.stringify({
+  return createResponse({
     code: 0,
     msg: '题目编号已锁定',
     data: { lockNum: num }
-  }), {
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders
-    }
   });
 }
 
-function handleGetWord(body) {
+async function handleGetWord(body) {
   const { roomId } = body;
   
-  if (!roomMap[roomId]) {
-    return new Response(JSON.stringify({ 
-      code: -1, 
-      msg: '房间号无效' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+  const room = getRoom(roomId);
+  if (!room) {
+    return createResponse({ code: -1, msg: '房间号无效' });
   }
-  
-  const room = roomMap[roomId];
   
   if (!room.isLock) {
-    return new Response(JSON.stringify({ 
-      code: -2, 
-      msg: '房主尚未锁定题目' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+    return createResponse({ code: -2, msg: '房主尚未锁定题目' });
   }
 
-  // 检查题库是否有该题目
   const lockNum = room.lockNum;
   if (!wordBank[lockNum]) {
-    return new Response(JSON.stringify({ 
-      code: -4, 
-      msg: `题库中没有编号为${lockNum}的题目` 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+    return createResponse({ code: -4, msg: `题库中没有编号为${lockNum}的题目` });
   }
 
-  // 已分配的人数
   const assigned = room.assigned;
   
   if (assigned >= room.total) {
-    return new Response(JSON.stringify({ 
-      code: -3, 
-      msg: '本房间身份已全部分配完毕' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+    return createResponse({ code: -3, msg: '本房间身份已全部分配完毕' });
   }
   
-  // 随机分配身份，确保卧底数量精确
+  // 随机分配身份
   let currRole;
-  
-  // 还剩下多少卧底名额
   const remainingSpySpots = room.spy - room.assignedSpyCount;
-  // 还剩下多少平民名额
   const remainingCivilSpots = room.civil - room.assignedCivilCount;
   
-  // 如果两种身份都还有名额，随机选择一种
   if (remainingSpySpots > 0 && remainingCivilSpots > 0) {
-    // 根据概率随机分配，概率基于剩余名额比例
     const spyProbability = remainingSpySpots / (remainingSpySpots + remainingCivilSpots);
     currRole = Math.random() < spyProbability ? 'spy' : 'civil';
   } else if (remainingSpySpots > 0) {
@@ -403,7 +300,6 @@ function handleGetWord(body) {
     currRole = 'civil';
   }
   
-  // 更新计数
   if (currRole === 'spy') {
     room.assignedSpyCount += 1;
   } else {
@@ -411,14 +307,16 @@ function handleGetWord(body) {
   }
   
   room.assigned += 1;
+  room.lastActivity = Date.now();
+  setRoom(roomId, room);
   
   // 获取词语
   const [spyWord, civilWord] = wordBank[lockNum];
   const word = currRole === 'spy' ? spyWord : civilWord;
   
-  console.log(`房间${roomId} 分配:${currRole}, 已分配:${room.assigned}/${room.total}, 词语:"${word}"`);
+  console.log(`房间 ${roomId} 分配: ${currRole}, 已分配: ${room.assigned}/${room.total}, 词语: "${word}"`);
   
-  return new Response(JSON.stringify({
+  return createResponse({
     code: 0,
     msg: '身份分配成功',
     data: {
@@ -428,31 +326,18 @@ function handleGetWord(body) {
       assigned: room.assigned,
       total: room.total
     }
-  }), {
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders
-    }
   });
 }
 
-function handleResetRoom(body) {
+async function handleResetRoom(body) {
   const { roomId } = body;
   
-  if (!roomMap[roomId]) {
-    return new Response(JSON.stringify({ 
-      code: -1, 
-      msg: '房间号无效' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+  const room = getRoom(roomId);
+  if (!room) {
+    return createResponse({ code: -1, msg: '房间号无效' });
   }
   
-  const total = roomMap[roomId].total;
-  // 重置时重新计算卧底数量
+  const total = room.total;
   let spyNum;
   if (total <= 6) {
     spyNum = 1;
@@ -464,7 +349,7 @@ function handleResetRoom(body) {
     spyNum = Math.floor(total / 5);
   }
   
-  roomMap[roomId] = {
+  const newRoomData = {
     isLock: false,
     lockNum: 0,
     total,
@@ -472,57 +357,37 @@ function handleResetRoom(body) {
     civil: total - spyNum,
     assigned: 0,
     assignedSpyCount: 0,
-    assignedCivilCount: 0
+    assignedCivilCount: 0,
+    createdAt: room.createdAt || Date.now(),
+    lastActivity: Date.now()
   };
   
-  return new Response(JSON.stringify({
+  setRoom(roomId, newRoomData);
+  
+  return createResponse({
     code: 0,
     msg: '房间重置成功'
-  }), {
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders
-    }
   });
 }
 
-// 新增：根据编号获取题目
-function handleGetWordByNum(body) {
+async function handleGetWordByNum(body) {
   const { num } = body;
   
   if (!num || !wordBank[num]) {
-    return new Response(JSON.stringify({ 
-      code: -1, 
-      msg: '题目编号无效' 
-    }), {
-      headers: { 
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+    return createResponse({ code: -1, msg: '题目编号无效' });
   }
   
   const [spyWord, civilWord] = wordBank[num];
   
-  return new Response(JSON.stringify({
+  return createResponse({
     code: 0,
     msg: '获取题目成功',
-    data: {
-      num,
-      spyWord,
-      civilWord
-    }
-  }), {
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders
-    }
+    data: { num, spyWord, civilWord }
   });
 }
 
-// 新增：获取题库信息
-function handleGetBankInfo(body) {
-  return new Response(JSON.stringify({
+async function handleGetBankInfo() {
+  return createResponse({
     code: 0,
     msg: '题库信息',
     data: {
@@ -531,10 +396,99 @@ function handleGetBankInfo(body) {
       maxNum: validNums[validNums.length - 1] || 1,
       sampleCount: Math.min(5, validNums.length)
     }
-  }), {
+  });
+}
+
+// 创建响应辅助函数
+function createResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
     headers: {
       'Content-Type': 'application/json',
       ...corsHeaders
     }
   });
 }
+
+// 主函数
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    
+    // 处理 OPTIONS 预检请求
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+    
+    // 只处理 POST 请求
+    if (request.method !== 'POST') {
+      return createResponse({ code: -405, msg: '方法不允许' }, 405);
+    }
+    
+    // 初始化题库（只在第一次请求时）
+    if (validNums.length === 0) {
+      await initWordBank();
+    }
+    
+    // 从 KV 加载房间数据（如果还没加载）
+    if (!cacheLoaded) {
+      await loadRoomsFromKV(env);
+      cacheLoaded = true;
+    }
+    
+    // 解析请求体
+    let body;
+    try {
+      body = await request.json();
+    } catch (e) {
+      return createResponse({ code: -400, msg: '请求体格式错误' }, 400);
+    }
+    
+    console.log(`请求: ${url.pathname}`, JSON.stringify(body).slice(0, 200));
+    
+    let response;
+    
+    // 路由分发
+    try {
+      switch (url.pathname) {
+        case '/api/createRoom':
+          response = await handleCreateRoom(body, env);
+          break;
+        case '/api/joinRoom':
+          response = await handleJoinRoom(body);
+          break;
+        case '/api/lockNum':
+          response = await handleLockNum(body);
+          break;
+        case '/api/getWord':
+          response = await handleGetWord(body);
+          break;
+        case '/api/resetRoom':
+          response = await handleResetRoom(body);
+          break;
+        case '/api/getWordByNum':
+          response = await handleGetWordByNum(body);
+          break;
+        case '/api/getBankInfo':
+          response = await handleGetBankInfo();
+          break;
+        default:
+          response = createResponse({ code: -404, msg: '接口不存在', path: url.pathname }, 404);
+      }
+    } catch (error) {
+      console.error('处理请求时出错:', error);
+      response = createResponse({ 
+        code: -500, 
+        msg: '服务器内部错误',
+        error: error.message
+      }, 500);
+    }
+    
+    // 异步保存房间数据到 KV（不阻塞响应）
+    if (env.ROOMS_KV && roomCache.size > 0) {
+      ctx.waitUntil(saveRoomsToKV(env));
+    }
+    
+    return response;
+  }
+};
