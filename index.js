@@ -44,19 +44,13 @@ async function initWordBank(env) {
       }
     }
     
-    // 需要从Github重新加载题库
-    console.log('从Github加载题库...');
-    wordBankUrl = 'https://github.com/ZZJ-jack/whoisspyServer/raw/refs/heads/main/title.txt';
-    response = await fetch(wordBankUrl);
+    // 需要从Gitee重新加载题库
+    console.log('从Gitee加载题库...');
+    const wordBankUrl = 'https://gitee.com/zzj-jack/whoisspyServer/raw/main/title.txt';
+    const response = await fetch(wordBankUrl);
     
     if (!response.ok) {
-      // 需要从Gitee重新加载题库
-      console.log('从Github加载题库失败，现在从Gitee加载题库...');
-      wordBankUrl = 'https://gitee.com/zzj-jack/whoisspyServer/raw/main/title.txt';
-      response = await fetch(wordBankUrl);
-      if(!response.ok) {
-        throw new Error(`题库加载失败: ${response.status}`);
-      }
+      throw new Error(`题库加载失败: ${response.status}`);
     }
     
     const text = await response.text();
