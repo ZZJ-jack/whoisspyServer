@@ -1,8 +1,13 @@
 name = "whoisspyserver"
 main = "index.js"
-compatibility_date = "2026-02-02"
+compatibility_date = "2026-02-03"
 compatibility_flags = ["nodejs_compat"]
 
 kv_namespaces = [
   { binding = "ROOMS_KV", id = "95974115555840bb9a5ae3c2c5803d2f" }
 ]
+
+[observability]
+[observability.logs]
+enabled = false
+invocation_logs = true
