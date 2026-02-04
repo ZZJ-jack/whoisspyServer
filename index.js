@@ -44,9 +44,9 @@ async function initWordBank(env) {
       }
     }
     
-    // 需要从Gitee重新加载题库
-    console.log('从Gitee加载题库...');
-    const wordBankUrl = 'https://gitee.com/zzj-jack/whoisspyServer/raw/main/title.txt';
+    // 需要从Github重新加载题库
+    console.log('从Github加载题库...');
+    const wordBankUrl = 'https://raw.githubusercontent.com/ZZJ-jack/whoisspyServer/refs/heads/main/title.txt';
     const response = await fetch(wordBankUrl);
     
     if (!response.ok) {
