@@ -150,19 +150,6 @@ function loadFallbackWords() {
 // 房间管理函数（全部基于 KV）
 async function getRoom(roomId, env) {
   const roomData = await env.ROOMS_KV.get(`${KV_KEYS.ROOM_PREFIX}${roomId}`, 'json');
-  
-  if (!roomData) {
-    return null;
-  }
-  
-  // 检查房间是否过期
-  const now = Date.now();
-  if (roomData.createdAt && (now - roomData.createdAt) > ROOM_EXPIRE_TIME) {
-    console.log(`房间 ${roomId} 已过期，自动清理`);
-    await deleteRoom(roomId, env);
-    return null;
-  }
-  
   return roomData;
 }
 
