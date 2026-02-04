@@ -13,7 +13,7 @@ let validNums = [];
 let bankInfo = null;
 
 // 常量定义
-const ROOM_EXPIRE_TIME = 6 * 60 * 60 * 1000; // 6小时过期
+const ROOM_EXPIRE_TIME = 1 * 60 * 60 * 1000; // 1小时过期
 const MAX_ROOMS = 1000; // 最大房间数
 
 // KV 键名常量
