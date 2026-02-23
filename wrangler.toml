@@ -7,6 +7,14 @@ kv_namespaces = [
   { binding = "ROOMS_KV", id = "95974115555840bb9a5ae3c2c5803d2f" }
 ]
 
+[[durable_objects.bindings]]
+name = "ROOM_DO"
+class_name = "RoomDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RoomDurableObject"]
+
 [observability]
 enabled = false
 head_sampling_rate = 1
