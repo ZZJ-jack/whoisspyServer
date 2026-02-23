@@ -162,21 +162,7 @@ export class RoomDurableObject {
     this.state = state;
     this.env = env;
     this.sessions = new Set();
-    this.roomData = null;
-    this.lastActivity = Date.now();
     this.wordBank = null;
-    this.ROOM_EXPIRY_MS = 60 * 60 * 1000;
-  }
-
-  async alarm() {
-    console.log(`房间 ${this.roomData?.roomId} 已过期，自动清理`);
-    this.roomData = null;
-    for (const session of this.sessions) {
-      try {
-        session.close(1000, 'Room expired');
-      } catch (e) {}
-    }
-    this.sessions.clear();
   }
 
   async ensureWordBank() {
@@ -216,9 +202,32 @@ export class RoomDurableObject {
     };
   }
 
-  isRoomExpired() {
-    if (!this.roomData) return true;
-    return Date.now() - this.roomData.createdAt > this.ROOM_EXPIRY_MS;
+  async getRoomData(roomId) {
+    const key = `room:${roomId}`;
+    return await this.env.ROOMS_KV.get(key, 'json');
+  }
+
+  async saveRoomData(roomId, data) {
+    const key = `room:${roomId}`;
+    await this.env.ROOMS_KV.put(key, JSON.stringify(data), { expirationTtl: 3600 });
+  }
+
+  async deleteRoomData(roomId) {
+    const key = `room:${roomId}`;
+    await this.env.ROOMS_KV.delete(key);
+  }
+
+  getPublicRoomData(roomData) {
+    if (!roomData) return null;
+    return {
+      roomId: roomData.roomId,
+      total: roomData.total,
+      spy: roomData.spy,
+      civil: roomData.civil,
+      isLock: roomData.isLock,
+      lockNum: roomData.lockNum,
+      assigned: roomData.assigned
+    };
   }
 
   async fetch(request) {
@@ -231,6 +240,9 @@ export class RoomDurableObject {
 
     await this.ensureWordBank();
 
+    const params = parseQueryParams(request.url);
+    const roomId = params.roomId;
+
     if (pathname === '/ws') {
       const upgradeHeader = request.headers.get('Upgrade');
       if (upgradeHeader !== 'websocket') {
@@ -240,7 +252,7 @@ export class RoomDurableObject {
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
 
-      this.handleSession(server);
+      this.handleSession(server, roomId);
 
       return new Response(null, {
         status: 101,
@@ -248,14 +260,12 @@ export class RoomDurableObject {
       });
     }
 
-    const params = parseQueryParams(request.url);
-
     if (pathname === '/init') {
       return await this.handleInit(params);
     }
 
     if (pathname === '/status') {
-      return await this.handleStatus();
+      return await this.handleStatus(roomId);
     }
 
     if (pathname === '/lockNum') {
@@ -263,17 +273,17 @@ export class RoomDurableObject {
     }
 
     if (pathname === '/getWord') {
-      return await this.handleGetWord();
+      return await this.handleGetWord(roomId);
     }
 
     if (pathname === '/reset') {
-      return await this.handleReset();
+      return await this.handleReset(roomId);
     }
 
     return createResponse({ code: -404, msg: 'Not found' }, 404);
   }
 
-  handleSession(webSocket) {
+  handleSession(webSocket, roomId) {
     webSocket.accept();
     this.sessions.add(webSocket);
 
@@ -296,12 +306,15 @@ export class RoomDurableObject {
       this.sessions.delete(webSocket);
     });
 
-    if (this.roomData) {
-      webSocket.send(JSON.stringify({
-        type: 'init',
-        data: this.getPublicRoomData()
-      }));
-    }
+    (async () => {
+      const roomData = await this.getRoomData(roomId);
+      if (roomData) {
+        webSocket.send(JSON.stringify({
+          type: 'init',
+          data: this.getPublicRoomData(roomData)
+        }));
+      }
+    })();
   }
 
   broadcast(message) {
@@ -315,34 +328,18 @@ export class RoomDurableObject {
     }
   }
 
-  getPublicRoomData() {
-    if (!this.roomData) return null;
-    const expiresAt = this.roomData.createdAt + this.ROOM_EXPIRY_MS;
-    return {
-      roomId: this.roomData.roomId,
-      total: this.roomData.total,
-      spy: this.roomData.spy,
-      civil: this.roomData.civil,
-      isLock: this.roomData.isLock,
-      lockNum: this.roomData.lockNum,
-      assigned: this.roomData.assigned,
-      createdAt: this.roomData.createdAt,
-      expiresAt
-    };
-  }
-
   async handleInit(params) {
     const total = parseInt(params.total);
+    const roomId = params.roomId;
     
     if (!total || total < 2 || total > 20) {
       return createResponse({ code: -1, msg: '总玩家数必须2~20之间' });
     }
 
     const spyNum = calculateSpyNum(total);
-    const now = Date.now();
 
-    this.roomData = {
-      roomId: params.roomId,
+    const roomData = {
+      roomId,
       total,
       spy: spyNum,
       civil: total - spyNum,
@@ -350,43 +347,42 @@ export class RoomDurableObject {
       lockNum: 0,
       assigned: 0,
       assignedSpyCount: 0,
-      assignedCivilCount: 0,
-      createdAt: now,
-      lastActivity: now
+      assignedCivilCount: 0
     };
 
-    this.state.storage.setAlarm(this.ROOM_EXPIRY_MS);
+    await this.saveRoomData(roomId, roomData);
 
     this.broadcast({
       type: 'roomCreated',
-      data: this.getPublicRoomData()
+      data: this.getPublicRoomData(roomData)
     });
 
     return createResponse({
       code: 0,
       msg: '房间创建成功',
-      data: this.getPublicRoomData()
+      data: this.getPublicRoomData(roomData)
     });
   }
 
-  async handleStatus() {
-    if (!this.roomData || this.isRoomExpired()) {
-      this.roomData = null;
+  async handleStatus(roomId) {
+    const roomData = await this.getRoomData(roomId);
+    
+    if (!roomData) {
       return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
-
-    this.roomData.lastActivity = Date.now();
 
     return createResponse({
       code: 0,
       msg: '获取状态成功',
-      data: this.getPublicRoomData()
+      data: this.getPublicRoomData(roomData)
     });
   }
 
   async handleLockNum(params) {
-    if (!this.roomData || this.isRoomExpired()) {
-      this.roomData = null;
+    const roomId = params.roomId;
+    const roomData = await this.getRoomData(roomId);
+    
+    if (!roomData) {
       return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
 
@@ -395,9 +391,10 @@ export class RoomDurableObject {
       return createResponse({ code: -3, msg: '题目编号无效' });
     }
 
-    this.roomData.isLock = true;
-    this.roomData.lockNum = numInt;
-    this.roomData.lastActivity = Date.now();
+    roomData.isLock = true;
+    roomData.lockNum = numInt;
+
+    await this.saveRoomData(roomId, roomData);
 
     this.broadcast({
       type: 'topicLocked',
@@ -414,28 +411,29 @@ export class RoomDurableObject {
     });
   }
 
-  async handleGetWord() {
-    if (!this.roomData || this.isRoomExpired()) {
-      this.roomData = null;
+  async handleGetWord(roomId) {
+    const roomData = await this.getRoomData(roomId);
+    
+    if (!roomData) {
       return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
 
-    if (!this.roomData.isLock) {
+    if (!roomData.isLock) {
       return createResponse({ code: -2, msg: '房主尚未锁定题目' });
     }
 
-    const lockNum = this.roomData.lockNum;
+    const lockNum = roomData.lockNum;
     if (!this.wordBank[lockNum]) {
       return createResponse({ code: -4, msg: `题库中没有编号为${lockNum}的题目` });
     }
 
-    if (this.roomData.assigned >= this.roomData.total) {
+    if (roomData.assigned >= roomData.total) {
       return createResponse({ code: -3, msg: '本房间身份已全部分配完毕' });
     }
 
     let currRole;
-    const remainingSpySpots = this.roomData.spy - this.roomData.assignedSpyCount;
-    const remainingCivilSpots = this.roomData.civil - this.roomData.assignedCivilCount;
+    const remainingSpySpots = roomData.spy - roomData.assignedSpyCount;
+    const remainingCivilSpots = roomData.civil - roomData.assignedCivilCount;
 
     if (remainingSpySpots > 0 && remainingCivilSpots > 0) {
       const spyProbability = remainingSpySpots / (remainingSpySpots + remainingCivilSpots);
@@ -447,13 +445,14 @@ export class RoomDurableObject {
     }
 
     if (currRole === 'spy') {
-      this.roomData.assignedSpyCount += 1;
+      roomData.assignedSpyCount += 1;
     } else {
-      this.roomData.assignedCivilCount += 1;
+      roomData.assignedCivilCount += 1;
     }
 
-    this.roomData.assigned += 1;
-    this.roomData.lastActivity = Date.now();
+    roomData.assigned += 1;
+
+    await this.saveRoomData(roomId, roomData);
 
     const [spyWord, civilWord] = this.wordBank[lockNum];
     const word = currRole === 'spy' ? spyWord : civilWord;
@@ -461,8 +460,8 @@ export class RoomDurableObject {
     this.broadcast({
       type: 'playerAssigned',
       data: {
-        assigned: this.roomData.assigned,
-        total: this.roomData.total
+        assigned: roomData.assigned,
+        total: roomData.total
       }
     });
 
@@ -473,24 +472,24 @@ export class RoomDurableObject {
         currRole,
         lockNum,
         word,
-        assigned: this.roomData.assigned,
-        total: this.roomData.total
+        assigned: roomData.assigned,
+        total: roomData.total
       }
     });
   }
 
-  async handleReset() {
-    if (!this.roomData || this.isRoomExpired()) {
-      this.roomData = null;
+  async handleReset(roomId) {
+    const roomData = await this.getRoomData(roomId);
+    
+    if (!roomData) {
       return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
 
-    const total = this.roomData.total;
+    const total = roomData.total;
     const spyNum = calculateSpyNum(total);
-    const now = Date.now();
 
-    this.roomData = {
-      roomId: this.roomData.roomId,
+    const newRoomData = {
+      roomId,
       total,
       spy: spyNum,
       civil: total - spyNum,
@@ -498,22 +497,20 @@ export class RoomDurableObject {
       lockNum: 0,
       assigned: 0,
       assignedSpyCount: 0,
-      assignedCivilCount: 0,
-      createdAt: now,
-      lastActivity: now
+      assignedCivilCount: 0
     };
 
-    this.state.storage.setAlarm(this.ROOM_EXPIRY_MS);
+    await this.saveRoomData(roomId, newRoomData);
 
     this.broadcast({
       type: 'roomReset',
-      data: this.getPublicRoomData()
+      data: this.getPublicRoomData(newRoomData)
     });
 
     return createResponse({
       code: 0,
       msg: '房间重置成功',
-      data: this.getPublicRoomData()
+      data: this.getPublicRoomData(newRoomData)
     });
   }
 }
@@ -600,6 +597,7 @@ export default {
 
       const statusUrl = new URL(request.url);
       statusUrl.pathname = '/status';
+      statusUrl.searchParams.set('roomId', roomId);
 
       const response = await stub.fetch(new Request(statusUrl, { method: 'GET' }));
       return response;
@@ -618,6 +616,7 @@ export default {
 
       const wsUrl = new URL(request.url);
       wsUrl.pathname = '/ws';
+      wsUrl.searchParams.set('roomId', roomId);
 
       return stub.fetch(new Request(wsUrl, {
         headers: request.headers
@@ -637,6 +636,7 @@ export default {
 
       const lockUrl = new URL(request.url);
       lockUrl.pathname = '/lockNum';
+      lockUrl.searchParams.set('roomId', roomId);
 
       return stub.fetch(new Request(lockUrl, { method: 'GET' }));
     }
@@ -654,6 +654,7 @@ export default {
 
       const wordUrl = new URL(request.url);
       wordUrl.pathname = '/getWord';
+      wordUrl.searchParams.set('roomId', roomId);
 
       return stub.fetch(new Request(wordUrl, { method: 'GET' }));
     }
@@ -671,6 +672,7 @@ export default {
 
       const resetUrl = new URL(request.url);
       resetUrl.pathname = '/reset';
+      resetUrl.searchParams.set('roomId', roomId);
 
       return stub.fetch(new Request(resetUrl, { method: 'GET' }));
     }
