@@ -164,6 +164,44 @@ export class RoomDurableObject {
     this.sessions = new Set();
     this.roomData = null;
     this.lastActivity = Date.now();
+    this.wordBank = null;
+  }
+
+  async ensureWordBank() {
+    if (this.wordBank) return;
+    
+    try {
+      const cachedBank = await this.env.ROOMS_KV.get(KV_KEYS.WORD_BANK, 'json');
+      if (cachedBank) {
+        this.wordBank = cachedBank;
+        return;
+      }
+    } catch (e) {
+      console.error('从KV获取题库失败:', e);
+    }
+    
+    this.wordBank = {
+      1: ['苹果', '香蕉'],
+      2: ['咖啡', '奶茶'],
+      3: ['微信', 'QQ'],
+      4: ['猫', '狗'],
+      5: ['冰箱', '空调'],
+      6: ['篮球', '足球'],
+      7: ['自行车', '电动车'],
+      8: ['电影院', 'KTV'],
+      9: ['春节', '中秋节'],
+      10: ['长城', '故宫'],
+      11: ['米饭', '面条'],
+      12: ['火车', '飞机'],
+      13: ['手机', '电脑'],
+      14: ['游泳', '跑步'],
+      15: ['可乐', '雪碧'],
+      16: ['太阳', '月亮'],
+      17: ['医生', '护士'],
+      18: ['钢琴', '小提琴'],
+      19: ['夏天', '冬天'],
+      20: ['牛奶', '豆浆']
+    };
   }
 
   async fetch(request) {
@@ -173,6 +211,8 @@ export class RoomDurableObject {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
+
+    await this.ensureWordBank();
 
     if (pathname === '/ws') {
       const upgradeHeader = request.headers.get('Upgrade');
@@ -328,7 +368,7 @@ export class RoomDurableObject {
     }
 
     const numInt = parseInt(params.num);
-    if (!wordBank[numInt]) {
+    if (!this.wordBank[numInt]) {
       return createResponse({ code: -3, msg: '题目编号无效' });
     }
 
@@ -361,7 +401,7 @@ export class RoomDurableObject {
     }
 
     const lockNum = this.roomData.lockNum;
-    if (!wordBank[lockNum]) {
+    if (!this.wordBank[lockNum]) {
       return createResponse({ code: -4, msg: `题库中没有编号为${lockNum}的题目` });
     }
 
@@ -391,7 +431,7 @@ export class RoomDurableObject {
     this.roomData.assigned += 1;
     this.roomData.lastActivity = Date.now();
 
-    const [spyWord, civilWord] = wordBank[lockNum];
+    const [spyWord, civilWord] = this.wordBank[lockNum];
     const word = currRole === 'spy' ? spyWord : civilWord;
 
     this.broadcast({
