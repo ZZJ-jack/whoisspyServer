@@ -165,6 +165,18 @@ export class RoomDurableObject {
     this.roomData = null;
     this.lastActivity = Date.now();
     this.wordBank = null;
+    this.ROOM_EXPIRY_MS = 60 * 60 * 1000;
+  }
+
+  async alarm() {
+    console.log(`房间 ${this.roomData?.roomId} 已过期，自动清理`);
+    this.roomData = null;
+    for (const session of this.sessions) {
+      try {
+        session.close(1000, 'Room expired');
+      } catch (e) {}
+    }
+    this.sessions.clear();
   }
 
   async ensureWordBank() {
@@ -202,6 +214,11 @@ export class RoomDurableObject {
       19: ['夏天', '冬天'],
       20: ['牛奶', '豆浆']
     };
+  }
+
+  isRoomExpired() {
+    if (!this.roomData) return true;
+    return Date.now() - this.roomData.createdAt > this.ROOM_EXPIRY_MS;
   }
 
   async fetch(request) {
@@ -300,6 +317,7 @@ export class RoomDurableObject {
 
   getPublicRoomData() {
     if (!this.roomData) return null;
+    const expiresAt = this.roomData.createdAt + this.ROOM_EXPIRY_MS;
     return {
       roomId: this.roomData.roomId,
       total: this.roomData.total,
@@ -308,7 +326,8 @@ export class RoomDurableObject {
       isLock: this.roomData.isLock,
       lockNum: this.roomData.lockNum,
       assigned: this.roomData.assigned,
-      createdAt: this.roomData.createdAt
+      createdAt: this.roomData.createdAt,
+      expiresAt
     };
   }
 
@@ -336,6 +355,8 @@ export class RoomDurableObject {
       lastActivity: now
     };
 
+    this.state.storage.setAlarm(this.ROOM_EXPIRY_MS);
+
     this.broadcast({
       type: 'roomCreated',
       data: this.getPublicRoomData()
@@ -349,8 +370,9 @@ export class RoomDurableObject {
   }
 
   async handleStatus() {
-    if (!this.roomData) {
-      return createResponse({ code: -1, msg: '房间不存在' });
+    if (!this.roomData || this.isRoomExpired()) {
+      this.roomData = null;
+      return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
 
     this.roomData.lastActivity = Date.now();
@@ -363,8 +385,9 @@ export class RoomDurableObject {
   }
 
   async handleLockNum(params) {
-    if (!this.roomData) {
-      return createResponse({ code: -1, msg: '房间不存在' });
+    if (!this.roomData || this.isRoomExpired()) {
+      this.roomData = null;
+      return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
 
     const numInt = parseInt(params.num);
@@ -392,8 +415,9 @@ export class RoomDurableObject {
   }
 
   async handleGetWord() {
-    if (!this.roomData) {
-      return createResponse({ code: -1, msg: '房间不存在' });
+    if (!this.roomData || this.isRoomExpired()) {
+      this.roomData = null;
+      return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
 
     if (!this.roomData.isLock) {
@@ -456,12 +480,14 @@ export class RoomDurableObject {
   }
 
   async handleReset() {
-    if (!this.roomData) {
-      return createResponse({ code: -1, msg: '房间不存在' });
+    if (!this.roomData || this.isRoomExpired()) {
+      this.roomData = null;
+      return createResponse({ code: -1, msg: '房间不存在或已过期' });
     }
 
     const total = this.roomData.total;
     const spyNum = calculateSpyNum(total);
+    const now = Date.now();
 
     this.roomData = {
       roomId: this.roomData.roomId,
@@ -473,9 +499,11 @@ export class RoomDurableObject {
       assigned: 0,
       assignedSpyCount: 0,
       assignedCivilCount: 0,
-      createdAt: this.roomData.createdAt,
-      lastActivity: Date.now()
+      createdAt: now,
+      lastActivity: now
     };
+
+    this.state.storage.setAlarm(this.ROOM_EXPIRY_MS);
 
     this.broadcast({
       type: 'roomReset',
